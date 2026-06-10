@@ -189,7 +189,6 @@ resource sqlEntraAdministrator 'Microsoft.Sql/servers/administrators@2023-08-01-
     login: sqlEntraAdministratorLogin
     sid: sqlEntraAdministratorObjectId
     tenantId: tenant().tenantId
-    azureADOnlyAuthentication: false
   }
 }
 
@@ -212,7 +211,7 @@ resource sqlConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: 'Sql--ConnectionString'
   parent: keyVault
   properties: {
-    value: 'Server=tcp:${sqlServer.name}.database.windows.net,1433;Initial Catalog=${sqlDb.name};Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;'
+    value: 'Server=tcp:${sqlServer.name}.${environment().suffixes.sqlServerHostname},1433;Initial Catalog=${sqlDb.name};Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;'
   }
 }
 
