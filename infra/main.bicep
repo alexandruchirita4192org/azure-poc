@@ -211,7 +211,7 @@ resource sqlConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   name: 'Sql--ConnectionString'
   parent: keyVault
   properties: {
-    value: 'Server=tcp:${sqlServer.name}.${environment().suffixes.sqlServerHostname},1433;Initial Catalog=${sqlDb.name};Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;'
+    value: 'Server=tcp:${sqlServer.name}${environment().suffixes.sqlServerHostname},1433;Initial Catalog=${sqlDb.name};Authentication=Active Directory Default;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;'
   }
 }
 
@@ -488,7 +488,7 @@ resource apiKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     principalId: apiApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
-  
+
 }
 resource functionKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(keyVault.id, functionApp.id, 'secrets')
