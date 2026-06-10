@@ -181,6 +181,15 @@ resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   }
 }
 
+resource allowAzureServicesFirewallRule 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
+  name: 'AllowAllWindowsAzureIps'
+  parent: sqlServer
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
 resource sqlEntraAdministrator 'Microsoft.Sql/servers/administrators@2023-08-01-preview' = if (!empty(sqlEntraAdministratorLogin) && !empty(sqlEntraAdministratorObjectId)) {
   name: 'ActiveDirectory'
   parent: sqlServer
