@@ -488,6 +488,16 @@ resource apiKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     principalId: apiApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
+  
+}
+resource functionKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(keyVault.id, functionApp.id, 'secrets')
+  scope: keyVault
+  properties: {
+    roleDefinitionId: keyVaultSecretsUserRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
 }
 
 resource workerAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
