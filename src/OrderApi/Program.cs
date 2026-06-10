@@ -74,7 +74,15 @@ app.MapPost("/orders", async (
 
     var database = cosmos.GetDatabase(config["Cosmos:Database"]);
     var container = database.GetContainer(config["Cosmos:Container"]);
-    await container.UpsertItemAsync(order, new PartitionKey(order.CustomerId), cancellationToken: cancellationToken);
+    var document = new
+    {
+        id = order.Id,
+        customerId = request.CustomerId,
+        sku = request.Sku,
+        quantity = request.Quantity,
+        createdUtc = order.CreatedUtc
+    };
+    await container.UpsertItemAsync(document, new PartitionKey(document.customerId), cancellationToken: cancellationToken);
 
     var blobContainer = blobs.GetBlobContainerClient(config["Storage:PayloadContainer"]);
     await blobContainer.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
