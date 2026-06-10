@@ -1,0 +1,137 @@
+name: Azure PoC
+
+on:
+  workflow_dispatch:
+    inputs:
+      resource_group:
+        description: Azure resource group
+        required: true
+        default: rg-azure-poc
+      location:
+        description: Azure location
+        required: true
+        default: westeurope
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  DOTNET_VERSION: 8.0.x
+  DEPLOYMENT_NAME: azure-poc
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Build apps
+        run: |
+          dotnet build src/OrderApi/OrderApi.csproj --configuration Release
+          dotnet build src/OrderFunctions/OrderFunctions.csproj --configuration Release
+          dotnet build src/OrderWorker/OrderWorker.csproj --configuration Release
+
+      - name: Publish apps
+        run: |
+          dotnet publish src/OrderApi/OrderApi.csproj --configuration Release --output publish/api
+          dotnet publish src/OrderFunctions/OrderFunctions.csproj --configuration Release --output publish/functions
+          cd publish/api && zip -r ../api.zip .
+          cd ../functions && zip -r ../functions.zip .
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create resource group
+        run: az group create --name "${{ inputs.resource_group }}" --location "${{ inputs.location }}"
+
+      - name: Validate Bicep
+        run: |
+          az deployment group validate \
+            --resource-group "${{ inputs.resource_group }}" \
+            --template-file infra/main.bicep \
+            --parameters infra/main.parameters.json location="${{ inputs.location }}"
+
+      - name: Deploy infrastructure
+        run: |
+          az deployment group create \
+            --name "${{ env.DEPLOYMENT_NAME }}" \
+            --resource-group "${{ inputs.resource_group }}" \
+            --template-file infra/main.bicep \
+            --parameters infra/main.parameters.json location="${{ inputs.location }}"
+
+      - name: Read deployment outputs
+        id: outputs
+        run: |
+          outputs="$(az deployment group show \
+            --resource-group "${{ inputs.resource_group }}" \
+            --name "${{ env.DEPLOYMENT_NAME }}" \
+            --query properties.outputs)"
+          echo "app_service_name=$(echo "$outputs" | jq -r '.appServiceName.value')" >> "$GITHUB_OUTPUT"
+          echo "function_app_name=$(echo "$outputs" | jq -r '.functionAppName.value')" >> "$GITHUB_OUTPUT"
+          echo "container_app_name=$(echo "$outputs" | jq -r '.containerAppName.value')" >> "$GITHUB_OUTPUT"
+          echo "acr_name=$(echo "$outputs" | jq -r '.containerRegistryName.value')" >> "$GITHUB_OUTPUT"
+          echo "acr_login_server=$(echo "$outputs" | jq -r '.containerRegistryLoginServer.value')" >> "$GITHUB_OUTPUT"
+          echo "event_grid_topic_id=$(echo "$outputs" | jq -r '.eventGridTopicId.value')" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy API
+        run: |
+          az webapp deploy \
+            --resource-group "${{ inputs.resource_group }}" \
+            --name "${{ steps.outputs.outputs.app_service_name }}" \
+            --src-path publish/api.zip \
+            --type zip
+
+      - name: Deploy Functions
+        run: |
+          az functionapp deployment source config-zip \
+            --resource-group "${{ inputs.resource_group }}" \
+            --name "${{ steps.outputs.outputs.function_app_name }}" \
+            --src publish/functions.zip
+
+      - name: Connect Event Grid to Function
+        run: |
+          function_id="$(az functionapp function show \
+            --resource-group "${{ inputs.resource_group }}" \
+            --name "${{ steps.outputs.outputs.function_app_name }}" \
+            --function-name OrderEventFunction \
+            --query id \
+            --output tsv)"
+          az eventgrid event-subscription create \
+            --name orders-created-to-function \
+            --source-resource-id "${{ steps.outputs.outputs.event_grid_topic_id }}" \
+            --endpoint-type azurefunction \
+            --endpoint "$function_id" \
+            --included-event-types OrderCreated
+
+      - name: Build and push worker image
+        run: |
+          az acr login --name "${{ steps.outputs.outputs.acr_name }}"
+          docker build \
+            --file src/OrderWorker/Dockerfile \
+            --tag "${{ steps.outputs.outputs.acr_login_server }}/order-worker:${{ github.sha }}" \
+            .
+          docker push "${{ steps.outputs.outputs.acr_login_server }}/order-worker:${{ github.sha }}"
+
+      - name: Deploy worker image to Container Apps
+        run: |
+          az containerapp registry set \
+            --resource-group "${{ inputs.resource_group }}" \
+            --name "${{ steps.outputs.outputs.container_app_name }}" \
+            --server "${{ steps.outputs.outputs.acr_login_server }}" \
+            --identity system
+          az containerapp update \
+            --resource-group "${{ inputs.resource_group }}" \
+            --name "${{ steps.outputs.outputs.container_app_name }}" \
+            --image "${{ steps.outputs.outputs.acr_login_server }}/order-worker:${{ github.sha }}"
