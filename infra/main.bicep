@@ -352,16 +352,13 @@ resource functionPlan 'Microsoft.Web/serverfarms@2023-12-01' = {
     name: 'Y1'
     tier: 'Dynamic'
   }
-  properties: {
-    reserved: true
-  }
 }
 
 resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
   name: 'func-${namePrefix}'
   location: location
   tags: tags
-  kind: 'functionapp,linux'
+  kind: 'functionapp'
   identity: {
     type: 'SystemAssigned'
   }
@@ -369,7 +366,6 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     serverFarmId: functionPlan.id
     httpsOnly: true
     siteConfig: {
-      linuxFxVersion: 'DOTNET-ISOLATED|8.0'
       appSettings: [
         {
           name: 'AzureWebJobsStorage'
