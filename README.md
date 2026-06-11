@@ -140,7 +140,7 @@ The pipeline validates and deploys Bicep, publishes the App Service API, publish
 
 ## Success Criteria
 
-- An order can be submitted through API Management.
+- An order can be submitted through API Management with a command like `curl -i -X POST https://[app-hostname]/orders -H "Content-Type: application/json" -d '{"customerId":"cust-001","sku":"sku-001","quantity":1}'`.
 - The App Service API writes to Azure SQL, Cosmos DB, and Blob Storage.
 - The API sends a Service Bus message and publishes an Event Grid event.
 - The Container Apps worker consumes the Service Bus message.
