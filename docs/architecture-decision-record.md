@@ -12,9 +12,9 @@ The PoC needs to demonstrate a representative Azure application using API ingres
 
 Use an order intake workflow:
 
-1. API Management exposes `POST /orders`.
-2. App Service hosts a .NET API that accepts the request.
-3. The API persists normalized state in Azure SQL.
+1. API Management exposes `POST /orders`, requires subscriptions, and injects a backend key.
+2. App Service hosts a .NET API that accepts the request only when the APIM backend key is present.
+3. The API persists normalized state in Azure SQL over a private endpoint.
 4. The API stores the full document in Cosmos DB.
 5. The API archives the submitted payload in Azure Blob Storage.
 6. The API sends a processing message to Service Bus.
@@ -23,6 +23,8 @@ Use an order intake workflow:
 9. Azure Container Apps runs a Service Bus worker.
 10. Application Insights receives telemetry from all compute services.
 11. Key Vault plus managed identity is the default configuration and secret access pattern.
+12. SQL schema bootstrap is run by an administrator or controlled deployment identity, while the runtime API identity receives only order insert permission.
+13. The worker image is built from digest-pinned bases, scanned for HIGH/CRITICAL vulnerabilities, signed with Sigstore, and deployed only by immutable digest from the `master` workflow.
 
 ## Consequences
 
@@ -32,6 +34,8 @@ Positive:
 - The flow is easy to test manually and through automation.
 - Managed identity and observability are part of the first slice.
 - Async processing can be extended later without changing the API contract.
+- Public SQL exposure, broad SQL runtime roles, and direct unauthenticated App Service writes are excluded from the PoC baseline.
+- Container image provenance, vulnerability gating, signing, and digest deployment are part of the delivery baseline.
 
 Tradeoffs:
 
@@ -43,5 +47,5 @@ Tradeoffs:
 
 - Decide whether the long-term API hosting target should be App Service, Container Apps, or both.
 - Decide whether Event Grid is needed if Service Bus already carries all operational work.
-- Choose a real authentication model for API Management, such as Entra ID, subscription keys, mTLS, or OAuth2.
-- Add private networking and firewall rules if the PoC is promoted beyond an isolated sandbox.
+- Choose the long-term authentication model for API Management, such as Entra ID, mTLS, OAuth2, or a product subscription model.
+- Decide whether Sigstore should remain the long-term artifact policy or be replaced by an enterprise Azure-integrated signing policy.

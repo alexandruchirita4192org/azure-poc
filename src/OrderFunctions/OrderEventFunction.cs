@@ -10,9 +10,8 @@ public sealed class OrderEventFunction(ILogger<OrderEventFunction> logger)
     public void Run([EventGridTrigger] EventGridEvent eventGridEvent)
     {
         logger.LogInformation(
-            "Received Event Grid event {EventType} for {Subject}. Payload: {Payload}",
+            "Received Event Grid event {EventType} for {Subject}.",
             eventGridEvent.EventType,
-            eventGridEvent.Subject,
-            eventGridEvent.Data.ToString());
+            eventGridEvent.Subject);
     }
 }

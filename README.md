@@ -26,7 +26,8 @@ Can a managed-identity-first Azure application process an order through synchron
 flowchart LR
     Client[Client] --> APIM[API Management]
     APIM --> API[App Service: Order API]
-    API --> SQL[(Azure SQL)]
+    API --> SQLPE[SQL Private Endpoint]
+    SQLPE --> SQL[(Azure SQL)]
     API --> Cosmos[(Cosmos DB)]
     API --> Blob[(Storage Blob)]
     API --> SB[Service Bus Queue]
@@ -34,8 +35,6 @@ flowchart LR
     EG --> Fn[Azure Functions]
     SB --> Worker[Container Apps Worker]
     API --> KV[Key Vault]
-    Worker --> KV
-    Fn --> KV
     API --> AI[Application Insights]
     Worker --> AI
     Fn --> AI
@@ -45,11 +44,11 @@ flowchart LR
 
 | Service | Use in this PoC |
 | --- | --- |
-| App Service | Hosts the public order intake API. |
-| API Management | Publishes and protects the API surface. |
+| App Service | Hosts the order intake API behind APIM and validates the APIM-injected backend key. |
+| API Management | Publishes the API surface, requires subscriptions, rate limits requests, and injects the backend key. |
 | Azure SQL | Stores normalized order status records. |
 | Cosmos DB | Stores full order documents for flexible reads. |
-| Azure Storage | Archives original order payloads as blobs. |
+| Azure Storage | Archives original order payloads as blobs and provides separate identity-backed Function host storage. |
 | Service Bus | Decouples order processing from API intake. |
 | Event Grid | Emits order-created lifecycle events. |
 | Azure Functions | Handles Event Grid events for notifications or projections. |
@@ -94,8 +93,10 @@ The workflow uses Azure OpenID Connect. Configure these GitHub secrets:
 - `AZURE_CLIENT_ID`
 - `AZURE_TENANT_ID`
 - `AZURE_SUBSCRIPTION_ID`
+- `SQL_ADMINISTRATOR_PASSWORD`
+- `ORDER_API_BACKEND_KEY`
 
-The pipeline validates and deploys Bicep, publishes the App Service API, publishes the Function App, creates the Event Grid subscription after the Function exists, builds the worker image, pushes it to Azure Container Registry, and updates the Container App.
+The production deployment workflow is restricted to `refs/heads/master`. It runs the local security validation script, restores NuGet packages in locked mode with vulnerability audit enabled, validates and deploys Bicep, publishes the App Service API, publishes the Function App, creates the Event Grid subscription after the Function exists, builds the worker image from digest-pinned base images with SBOM/provenance metadata, pushes it to Azure Container Registry, deletes the pushed digest if the HIGH/CRITICAL Trivy gate fails, signs the image with Sigstore, verifies the signature against the `master` workflow identity, and updates the Container App by immutable digest.
 
 ## Quick Start
 
@@ -108,10 +109,9 @@ The pipeline validates and deploys Bicep, publishes the App Service API, publish
 2. Deploy infrastructure:
 
    ```bash
-   az deployment group create \
-     --resource-group rg-azure-poc \
-     --template-file infra/main.bicep \
-     --parameters infra/main.parameters.json
+   export SQL_ADMINISTRATOR_PASSWORD="<strong-password>"
+   export ORDER_API_BACKEND_KEY="<random-backend-key>"
+   ./scripts/deploy.sh
    ```
 
    To use Azure SQL managed identity authentication, set `sqlEntraAdministratorLogin` and `sqlEntraAdministratorObjectId` in `infra/main.parameters.json` before deployment.
@@ -130,17 +130,15 @@ The pipeline validates and deploys Bicep, publishes the App Service API, publish
 
    ```sql
    -- See scripts/sql-managed-identity-bootstrap.sql
-   CREATE USER [app-REPLACE-WITH-APP-SERVICE-NAME] FROM EXTERNAL PROVIDER;
-   ALTER ROLE db_datareader ADD MEMBER [app-REPLACE-WITH-APP-SERVICE-NAME];
-   ALTER ROLE db_datawriter ADD MEMBER [app-REPLACE-WITH-APP-SERVICE-NAME];
-   ALTER ROLE db_ddladmin ADD MEMBER [app-REPLACE-WITH-APP-SERVICE-NAME];
+   -- See scripts/sql-managed-identity-bootstrap.sql
    ```
 
-   This step must be run by the configured Azure SQL Microsoft Entra administrator after deployment. It is separated because Azure SQL database users are data-plane objects, not normal ARM resources.
+   This step creates the `dbo.Orders` table if missing, creates the App Service managed identity user, and grants only `INSERT` through the `app_order_writer` role. It must be run by the configured Azure SQL Microsoft Entra administrator after deployment because Azure SQL database users are data-plane objects, not normal ARM resources.
 
 ## Success Criteria
 
-- An order can be submitted through API Management with a command like `curl -i -X POST https://[app-hostname]/orders -H "Content-Type: application/json" -d '{"customerId":"cust-001","sku":"sku-001","quantity":1}'`.
+- An order can be submitted through API Management with a valid APIM subscription key.
+- Direct App Service requests to `POST /orders` without the APIM backend key are rejected.
 - The App Service API writes to Azure SQL, Cosmos DB, and Blob Storage.
 - The API sends a Service Bus message and publishes an Event Grid event.
 - The Container Apps worker consumes the Service Bus message.
@@ -152,6 +150,6 @@ The pipeline validates and deploys Bicep, publishes the App Service API, publish
 ## Assumptions
 
 - The PoC is optimized for breadth of integration, not production hardening.
-- SQL schema migration is represented by a startup initialization path for PoC speed.
+- SQL schema migration is represented by the SQL bootstrap script, not by runtime request handling.
 - Secrets that must exist as connection strings are stored in Key Vault and referenced by managed identity-enabled apps.
 - The sample code is intentionally thin and should be expanded with domain validation, auth policy, retry policies, and production-grade failure handling before real use.

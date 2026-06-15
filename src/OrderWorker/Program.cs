@@ -30,8 +30,12 @@ public sealed class OrderWorker(
 
         processor.ProcessMessageAsync += async args =>
         {
-            var body = args.Message.Body.ToString();
-            logger.LogInformation("Processing order message {MessageId}: {Body}", args.Message.MessageId, body);
+            logger.LogInformation(
+                "Processing order message {MessageId} with subject {Subject}, correlation {CorrelationId}, delivery {DeliveryCount}",
+                args.Message.MessageId,
+                args.Message.Subject,
+                args.Message.CorrelationId,
+                args.Message.DeliveryCount);
             await args.CompleteMessageAsync(args.Message, args.CancellationToken);
         };
 
