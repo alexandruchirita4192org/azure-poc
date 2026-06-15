@@ -11,9 +11,6 @@
     "sqlAdministratorLogin": {
       "value": "sqladminuser"
     },
-    "sqlAdministratorPassword": {
-      "value": "Replace-With-A-Strong-Password-123!"
-    },
     "sqlEntraAdministratorLogin": {
       "value": ""
     },

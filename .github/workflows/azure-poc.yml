@@ -17,37 +17,63 @@ permissions:
   contents: read
 
 env:
-  DOTNET_VERSION: 8.0.x
+  DOTNET_VERSION: 8.0.422
   DEPLOYMENT_NAME: azure-poc
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    env:
+      SQL_ADMINISTRATOR_PASSWORD: ${{ secrets.SQL_ADMINISTRATOR_PASSWORD }}
+      ORDER_API_BACKEND_KEY: ${{ secrets.ORDER_API_BACKEND_KEY }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Security static validation
+        shell: pwsh
+        run: ./scripts/validate-security.ps1
+
+      - name: Check required deployment secrets
+        shell: bash
+        run: |
+          test "$GITHUB_REF" = "refs/heads/master" || { echo "Production deployment must run from refs/heads/master."; exit 1; }
+          test -n "$SQL_ADMINISTRATOR_PASSWORD" || { echo "SQL_ADMINISTRATOR_PASSWORD secret is required."; exit 1; }
+          test -n "$ORDER_API_BACKEND_KEY" || { echo "ORDER_API_BACKEND_KEY secret is required."; exit 1; }
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
 
+      - name: Restore apps
+        run: |
+          dotnet restore src/OrderApi/OrderApi.csproj --locked-mode
+          dotnet restore src/OrderFunctions/OrderFunctions.csproj --locked-mode
+          dotnet restore src/OrderWorker/OrderWorker.csproj --locked-mode
+
+      - name: Check vulnerable packages
+        run: |
+          dotnet list src/OrderApi/OrderApi.csproj package --vulnerable --include-transitive --no-restore
+          dotnet list src/OrderFunctions/OrderFunctions.csproj package --vulnerable --include-transitive --no-restore
+          dotnet list src/OrderWorker/OrderWorker.csproj package --vulnerable --include-transitive --no-restore
+
       - name: Build apps
         run: |
-          dotnet build src/OrderApi/OrderApi.csproj --configuration Release
-          dotnet build src/OrderFunctions/OrderFunctions.csproj --configuration Release
-          dotnet build src/OrderWorker/OrderWorker.csproj --configuration Release
+          dotnet build src/OrderApi/OrderApi.csproj --configuration Release --no-restore
+          dotnet build src/OrderFunctions/OrderFunctions.csproj --configuration Release --no-restore
+          dotnet build src/OrderWorker/OrderWorker.csproj --configuration Release --no-restore
 
       - name: Publish apps
         run: |
-          dotnet publish src/OrderApi/OrderApi.csproj --configuration Release --output publish/api
-          dotnet publish src/OrderFunctions/OrderFunctions.csproj --configuration Release --output publish/functions
+          dotnet publish src/OrderApi/OrderApi.csproj --configuration Release --no-restore --output publish/api
+          dotnet publish src/OrderFunctions/OrderFunctions.csproj --configuration Release --no-restore --output publish/functions
           cd publish/api && zip -r ../api.zip .
           cd ../functions && zip -r ../functions.zip .
 
       - name: Azure login
-        uses: azure/login@v3
+        uses: azure/login@2dd0bbf4064d5a1812889dc200bb8eed2597f82a
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -61,7 +87,7 @@ jobs:
           az deployment group validate \
             --resource-group "${{ inputs.resource_group }}" \
             --template-file infra/main.bicep \
-            --parameters infra/main.parameters.json location="${{ inputs.location }}"
+            --parameters infra/main.parameters.json location="${{ inputs.location }}" sqlAdministratorPassword="$SQL_ADMINISTRATOR_PASSWORD" orderApiBackendKey="$ORDER_API_BACKEND_KEY"
 
       - name: Deploy infrastructure
         run: |
@@ -69,7 +95,7 @@ jobs:
             --name "${{ env.DEPLOYMENT_NAME }}" \
             --resource-group "${{ inputs.resource_group }}" \
             --template-file infra/main.bicep \
-            --parameters infra/main.parameters.json location="${{ inputs.location }}"
+            --parameters infra/main.parameters.json location="${{ inputs.location }}" sqlAdministratorPassword="$SQL_ADMINISTRATOR_PASSWORD" orderApiBackendKey="$ORDER_API_BACKEND_KEY"
 
       - name: Read deployment outputs
         id: outputs
@@ -116,13 +142,55 @@ jobs:
             --included-event-types OrderCreated
 
       - name: Build and push worker image
+        id: worker_image
         run: |
+          image_repository="${{ steps.outputs.outputs.acr_login_server }}/order-worker"
+          image_tag="$image_repository:${{ github.sha }}"
+          metadata_file="$RUNNER_TEMP/order-worker-image.json"
           az acr login --name "${{ steps.outputs.outputs.acr_name }}"
-          docker build \
+          docker buildx build \
             --file src/OrderWorker/Dockerfile \
-            --tag "${{ steps.outputs.outputs.acr_login_server }}/order-worker:${{ github.sha }}" \
+            --tag "$image_tag" \
+            --provenance=true \
+            --sbom=true \
+            --metadata-file "$metadata_file" \
+            --push \
             .
-          docker push "${{ steps.outputs.outputs.acr_login_server }}/order-worker:${{ github.sha }}"
+          image_digest="$(jq -r '."containerimage.digest"' "$metadata_file")"
+          test -n "$image_digest" && test "$image_digest" != "null"
+          digest_image="$image_repository@$image_digest"
+          echo "image=$image_tag" >> "$GITHUB_OUTPUT"
+          echo "digest=$image_digest" >> "$GITHUB_OUTPUT"
+          echo "digest_image=$digest_image" >> "$GITHUB_OUTPUT"
+
+      - name: Scan worker image
+        uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8
+        with:
+          image-ref: ${{ steps.worker_image.outputs.digest_image }}
+          format: table
+          exit-code: '1'
+          severity: HIGH,CRITICAL
+
+      - name: Delete worker image after failed scan
+        if: failure() && steps.worker_image.outputs.digest != ''
+        run: |
+          az acr repository delete \
+            --name "${{ steps.outputs.outputs.acr_name }}" \
+            --image "order-worker@${{ steps.worker_image.outputs.digest }}" \
+            --yes
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d58896d6a1865668819e1d91763c7751a165e159
+
+      - name: Sign worker image
+        run: cosign sign --yes "${{ steps.worker_image.outputs.digest_image }}"
+
+      - name: Verify worker image signature
+        run: |
+          cosign verify \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/azure-poc.yml@refs/heads/master" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ steps.worker_image.outputs.digest_image }}"
 
       - name: Deploy worker image to Container Apps
         run: |
@@ -134,4 +202,4 @@ jobs:
           az containerapp update \
             --resource-group "${{ inputs.resource_group }}" \
             --name "${{ steps.outputs.outputs.container_app_name }}" \
-            --image "${{ steps.outputs.outputs.acr_login_server }}/order-worker:${{ github.sha }}"
+            --image "${{ steps.worker_image.outputs.digest_image }}"

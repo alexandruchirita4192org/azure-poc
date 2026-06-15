@@ -1,4 +1,5 @@
-using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Azure;
 using Azure.Core;
 using Azure.Identity;
@@ -29,6 +30,12 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton(sp =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
+    var serviceBus = sp.GetRequiredService<ServiceBusClient>();
+    return serviceBus.CreateSender(config["ServiceBus:QueueName"]);
+});
+builder.Services.AddSingleton(sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
     var credential = sp.GetRequiredService<TokenCredential>();
     return new CosmosClient(config["Cosmos:Endpoint"], credential);
 });
@@ -41,6 +48,8 @@ builder.Services.AddSingleton(sp =>
 
 var app = builder.Build();
 
+app.UseMiddleware<OrderApiKeyMiddleware>();
+
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.MapPost("/orders", async (
@@ -48,7 +57,7 @@ app.MapPost("/orders", async (
     IConfiguration config,
     ILoggerFactory loggerFactory,
     BlobServiceClient blobs,
-    ServiceBusClient serviceBus,
+    ServiceBusSender sender,
     CosmosClient cosmos,
     EventGridPublisherClient eventGrid,
     CancellationToken cancellationToken) =>
@@ -69,7 +78,6 @@ app.MapPost("/orders", async (
         Status: "Accepted",
         CreatedUtc: DateTimeOffset.UtcNow);
 
-    await EnsureSqlSchemaAsync(config, cancellationToken);
     await InsertSqlOrderAsync(config, order, cancellationToken);
 
     var database = cosmos.GetDatabase(config["Cosmos:Database"]);
@@ -85,11 +93,9 @@ app.MapPost("/orders", async (
     await container.UpsertItemAsync(document, new PartitionKey(document.customerId), cancellationToken: cancellationToken);
 
     var blobContainer = blobs.GetBlobContainerClient(config["Storage:PayloadContainer"]);
-    await blobContainer.CreateIfNotExistsAsync(cancellationToken: cancellationToken);
     var blob = blobContainer.GetBlobClient($"{order.Id}.json");
     await blob.UploadAsync(BinaryData.FromObjectAsJson(order), overwrite: true, cancellationToken);
 
-    var sender = serviceBus.CreateSender(config["ServiceBus:QueueName"]);
     await sender.SendMessageAsync(new ServiceBusMessage(BinaryData.FromObjectAsJson(order))
     {
         MessageId = order.Id,
@@ -103,33 +109,12 @@ app.MapPost("/orders", async (
         dataVersion: "1.0",
         data: BinaryData.FromObjectAsJson(order)), cancellationToken);
 
-    logger.LogInformation("Accepted order {OrderId} for customer {CustomerId}", order.Id, order.CustomerId);
+    logger.LogInformation("Accepted order {OrderId} with status {Status}", order.Id, order.Status);
 
     return Results.Accepted($"/orders/{order.Id}", new { order.Id, order.Status });
 });
 
 app.Run();
-
-static async Task EnsureSqlSchemaAsync(IConfiguration config, CancellationToken cancellationToken)
-{
-    const string sql = """
-    IF OBJECT_ID('dbo.Orders', 'U') IS NULL
-    CREATE TABLE dbo.Orders
-    (
-        Id nvarchar(64) NOT NULL PRIMARY KEY,
-        CustomerId nvarchar(128) NOT NULL,
-        Sku nvarchar(128) NOT NULL,
-        Quantity int NOT NULL,
-        Status nvarchar(64) NOT NULL,
-        CreatedUtc datetimeoffset NOT NULL
-    );
-    """;
-
-    await using var connection = new SqlConnection(config["Sql:ConnectionString"]);
-    await connection.OpenAsync(cancellationToken);
-    await using var command = new SqlCommand(sql, connection);
-    await command.ExecuteNonQueryAsync(cancellationToken);
-}
 
 static async Task InsertSqlOrderAsync(IConfiguration config, OrderDocument order, CancellationToken cancellationToken)
 {
@@ -148,6 +133,49 @@ static async Task InsertSqlOrderAsync(IConfiguration config, OrderDocument order
     command.Parameters.AddWithValue("@Status", order.Status);
     command.Parameters.AddWithValue("@CreatedUtc", order.CreatedUtc);
     await command.ExecuteNonQueryAsync(cancellationToken);
+}
+
+public sealed class OrderApiKeyMiddleware(
+    RequestDelegate next,
+    IConfiguration configuration,
+    ILogger<OrderApiKeyMiddleware> logger)
+{
+    private const string HeaderName = "X-Order-Api-Key";
+
+    public async Task InvokeAsync(HttpContext context)
+    {
+        if (!HttpMethods.IsPost(context.Request.Method) ||
+            !context.Request.Path.Equals("/orders", StringComparison.OrdinalIgnoreCase))
+        {
+            await next(context);
+            return;
+        }
+
+        var expectedKey = configuration["OrderApi:ApiKey"];
+        if (string.IsNullOrWhiteSpace(expectedKey))
+        {
+            logger.LogError("Order API backend key is not configured.");
+            context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+            return;
+        }
+
+        if (!context.Request.Headers.TryGetValue(HeaderName, out var providedKey) ||
+            !IsValidApiKey(providedKey.ToString(), expectedKey))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return;
+        }
+
+        await next(context);
+    }
+
+    private static bool IsValidApiKey(string providedKey, string expectedKey)
+    {
+        var providedBytes = Encoding.UTF8.GetBytes(providedKey);
+        var expectedBytes = Encoding.UTF8.GetBytes(expectedKey);
+        return providedBytes.Length == expectedBytes.Length &&
+            CryptographicOperations.FixedTimeEquals(providedBytes, expectedBytes);
+    }
 }
 
 public sealed record CreateOrderRequest(string CustomerId, string Sku, int Quantity);

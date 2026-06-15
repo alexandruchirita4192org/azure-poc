@@ -11,6 +11,10 @@ param sqlAdministratorLogin string
 @description('SQL administrator password for PoC deployment. Store securely in CI/CD secrets.')
 param sqlAdministratorPassword string
 
+@secure()
+@description('Shared secret injected by APIM and validated by the Order API backend.')
+param orderApiBackendKey string
+
 @description('Optional Microsoft Entra administrator display name for Azure SQL.')
 param sqlEntraAdministratorLogin string = ''
 
@@ -47,6 +51,44 @@ resource appInsights 'Microsoft.Insights/components@2020-02-02' = {
   }
 }
 
+resource virtualNetwork 'Microsoft.Network/virtualNetworks@2023-11-01' = {
+  name: 'vnet-${namePrefix}'
+  location: location
+  tags: tags
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        '10.42.0.0/16'
+      ]
+    }
+  }
+}
+
+resource appIntegrationSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
+  name: 'app-integration'
+  parent: virtualNetwork
+  properties: {
+    addressPrefix: '10.42.1.0/24'
+    delegations: [
+      {
+        name: 'web-farm'
+        properties: {
+          serviceName: 'Microsoft.Web/serverFarms'
+        }
+      }
+    ]
+  }
+}
+
+resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2023-11-01' = {
+  name: 'private-endpoints'
+  parent: virtualNetwork
+  properties: {
+    addressPrefix: '10.42.2.0/24'
+    privateEndpointNetworkPolicies: 'Disabled'
+  }
+}
+
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: toLower(replace('st${environmentName}${suffix}', '-', ''))
   location: location
@@ -71,6 +113,21 @@ resource orderPayloads 'Microsoft.Storage/storageAccounts/blobServices/container
   parent: blobService
   properties: {
     publicAccess: 'None'
+  }
+}
+
+resource functionStorage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
+  name: toLower(replace('funcst${environmentName}${suffix}', '-', ''))
+  location: location
+  tags: tags
+  sku: {
+    name: 'Standard_LRS'
+  }
+  kind: 'StorageV2'
+  properties: {
+    allowBlobPublicAccess: false
+    minimumTlsVersion: 'TLS1_2'
+    supportsHttpsTrafficOnly: true
   }
 }
 
@@ -166,7 +223,7 @@ resource sqlServer 'Microsoft.Sql/servers@2023-08-01-preview' = {
     administratorLogin: sqlAdministratorLogin
     administratorLoginPassword: sqlAdministratorPassword
     minimalTlsVersion: '1.2'
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
   }
 }
 
@@ -181,15 +238,6 @@ resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01-preview' = {
   }
 }
 
-resource allowAzureServicesFirewallRule 'Microsoft.Sql/servers/firewallRules@2023-08-01-preview' = {
-  name: 'AllowAllWindowsAzureIps'
-  parent: sqlServer
-  properties: {
-    startIpAddress: '0.0.0.0'
-    endIpAddress: '0.0.0.0'
-  }
-}
-
 resource sqlEntraAdministrator 'Microsoft.Sql/servers/administrators@2023-08-01-preview' = if (!empty(sqlEntraAdministratorLogin) && !empty(sqlEntraAdministratorObjectId)) {
   name: 'ActiveDirectory'
   parent: sqlServer
@@ -198,6 +246,61 @@ resource sqlEntraAdministrator 'Microsoft.Sql/servers/administrators@2023-08-01-
     login: sqlEntraAdministratorLogin
     sid: sqlEntraAdministratorObjectId
     tenantId: tenant().tenantId
+  }
+}
+
+resource sqlPrivateDnsZone 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink${environment().suffixes.sqlServerHostname}'
+  location: 'global'
+  tags: tags
+}
+
+resource sqlPrivateDnsZoneLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  name: 'vnet-${namePrefix}'
+  parent: sqlPrivateDnsZone
+  location: 'global'
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: virtualNetwork.id
+    }
+  }
+}
+
+resource sqlPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-11-01' = {
+  name: 'pe-sql-${namePrefix}'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'sql-server'
+        properties: {
+          privateLinkServiceId: sqlServer.id
+          groupIds: [
+            'sqlServer'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource sqlPrivateDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-11-01' = {
+  name: 'default'
+  parent: sqlPrivateEndpoint
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'sql-server'
+        properties: {
+          privateDnsZoneId: sqlPrivateDnsZone.id
+        }
+      }
+    ]
   }
 }
 
@@ -224,13 +327,21 @@ resource sqlConnectionSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
   }
 }
 
+resource orderApiBackendKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' = {
+  name: 'OrderApi--ApiKey'
+  parent: keyVault
+  properties: {
+    value: orderApiBackendKey
+  }
+}
+
 resource plan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: 'asp-${namePrefix}'
   location: location
   tags: tags
   sku: {
-    name: 'F1'
-    tier: 'Free'
+    name: 'B1'
+    tier: 'Basic'
   }
   properties: {
     reserved: true
@@ -247,6 +358,7 @@ resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
   }
   properties: {
     serverFarmId: plan.id
+    virtualNetworkSubnetId: appIntegrationSubnet.id
     siteConfig: {
       linuxFxVersion: 'DOTNETCORE|8.0'
       appSettings: [
@@ -289,6 +401,10 @@ resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
         {
           name: 'Sql__ConnectionString'
           value: '@Microsoft.KeyVault(SecretUri=${sqlConnectionSecret.properties.secretUriWithVersion})'
+        }
+        {
+          name: 'OrderApi__ApiKey'
+          value: '@Microsoft.KeyVault(SecretUri=${orderApiBackendKeySecret.properties.secretUriWithVersion})'
         }
       ]
     }
@@ -377,8 +493,20 @@ resource functionApp 'Microsoft.Web/sites@2023-12-01' = {
     siteConfig: {
       appSettings: [
         {
-          name: 'AzureWebJobsStorage'
-          value: 'DefaultEndpointsProtocol=https;AccountName=${storage.name};EndpointSuffix=${environment().suffixes.storage};AccountKey=${storage.listKeys().keys[0].value}'
+          name: 'AzureWebJobsStorage__credential'
+          value: 'managedidentity'
+        }
+        {
+          name: 'AzureWebJobsStorage__blobServiceUri'
+          value: 'https://${functionStorage.name}.blob.${environment().suffixes.storage}'
+        }
+        {
+          name: 'AzureWebJobsStorage__queueServiceUri'
+          value: 'https://${functionStorage.name}.queue.${environment().suffixes.storage}'
+        }
+        {
+          name: 'AzureWebJobsStorage__tableServiceUri'
+          value: 'https://${functionStorage.name}.table.${environment().suffixes.storage}'
         }
         {
           name: 'FUNCTIONS_EXTENSION_VERSION'
@@ -411,6 +539,16 @@ resource apim 'Microsoft.ApiManagement/service@2023-09-01-preview' = {
   }
 }
 
+resource orderApiBackendKeyNamedValue 'Microsoft.ApiManagement/service/namedValues@2023-09-01-preview' = {
+  name: 'order-api-backend-key'
+  parent: apim
+  properties: {
+    displayName: 'order-api-backend-key'
+    secret: true
+    value: orderApiBackendKey
+  }
+}
+
 resource ordersApi 'Microsoft.ApiManagement/service/apis@2023-09-01-preview' = {
   name: 'orders-api'
   parent: apim
@@ -421,7 +559,7 @@ resource ordersApi 'Microsoft.ApiManagement/service/apis@2023-09-01-preview' = {
       'https'
     ]
     serviceUrl: 'https://${apiApp.properties.defaultHostName}/orders'
-    subscriptionRequired: false
+    subscriptionRequired: true
   }
 }
 
@@ -441,8 +579,42 @@ resource ordersPost 'Microsoft.ApiManagement/service/apis/operations@2023-09-01-
   }
 }
 
+resource ordersApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2023-09-01-preview' = {
+  name: 'policy'
+  parent: ordersApi
+  properties: {
+    format: 'rawxml'
+    value: '''
+<policies>
+  <inbound>
+    <base />
+    <rate-limit calls="60" renewal-period="60" />
+    <set-header name="X-Order-Api-Key" exists-action="override">
+      <value>{{order-api-backend-key}}</value>
+    </set-header>
+  </inbound>
+  <backend>
+    <base />
+  </backend>
+  <outbound>
+    <base />
+  </outbound>
+  <on-error>
+    <base />
+  </on-error>
+</policies>
+'''
+  }
+  dependsOn: [
+    orderApiBackendKeyNamedValue
+  ]
+}
+
 var keyVaultSecretsUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var storageBlobDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+var storageBlobDataOwnerRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b7e6dc6d-f1e8-4753-8033-0f276bb0955b')
+var storageQueueDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '974c5e8b-45b9-4653-ba55-5f855dd0fb88')
+var storageTableDataContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3')
 var serviceBusDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '69a216fc-b8fb-44d8-bc22-1f3c2cd27a39')
 var serviceBusDataReceiverRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4f6d3b9b-027b-4f4c-9142-0e5a2a2247e0')
 var eventGridDataSenderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'd5a91429-5739-47e2-a06b-3470a27159e7')
@@ -450,8 +622,8 @@ var cosmosDataContributorRoleId = '${cosmos.id}/sqlRoleDefinitions/00000000-0000
 var acrPullRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
 
 resource apiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(storage.id, apiApp.id, 'blob')
-  scope: storage
+  name: guid(orderPayloads.id, apiApp.id, 'blob')
+  scope: orderPayloads
   properties: {
     roleDefinitionId: storageBlobDataContributorRoleId
     principalId: apiApp.identity.principalId
@@ -460,8 +632,8 @@ resource apiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 resource apiServiceBusSenderRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(serviceBus.id, apiApp.id, 'sender')
-  scope: serviceBus
+  name: guid(orderQueue.id, apiApp.id, 'sender')
+  scope: orderQueue
   properties: {
     roleDefinitionId: serviceBusDataSenderRoleId
     principalId: apiApp.identity.principalId
@@ -470,8 +642,8 @@ resource apiServiceBusSenderRole 'Microsoft.Authorization/roleAssignments@2022-0
 }
 
 resource workerServiceBusReceiverRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(serviceBus.id, worker.id, 'receiver')
-  scope: serviceBus
+  name: guid(orderQueue.id, worker.id, 'receiver')
+  scope: orderQueue
   properties: {
     roleDefinitionId: serviceBusDataReceiverRoleId
     principalId: worker.identity.principalId
@@ -490,8 +662,8 @@ resource apiEventGridSenderRole 'Microsoft.Authorization/roleAssignments@2022-04
 }
 
 resource apiKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, apiApp.id, 'secrets')
-  scope: keyVault
+  name: guid(sqlConnectionSecret.id, apiApp.id, 'secrets')
+  scope: sqlConnectionSecret
   properties: {
     roleDefinitionId: keyVaultSecretsUserRoleId
     principalId: apiApp.identity.principalId
@@ -499,11 +671,42 @@ resource apiKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 
 }
-resource functionKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(keyVault.id, functionApp.id, 'secrets')
-  scope: keyVault
+
+resource apiOrderApiKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(orderApiBackendKeySecret.id, apiApp.id, 'secrets')
+  scope: orderApiBackendKeySecret
   properties: {
     roleDefinitionId: keyVaultSecretsUserRoleId
+    principalId: apiApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageBlobOwnerRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(functionStorage.id, functionApp.id, 'blob-owner')
+  scope: functionStorage
+  properties: {
+    roleDefinitionId: storageBlobDataOwnerRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageQueueContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(functionStorage.id, functionApp.id, 'queue-contributor')
+  scope: functionStorage
+  properties: {
+    roleDefinitionId: storageQueueDataContributorRoleId
+    principalId: functionApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource functionStorageTableContributorRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(functionStorage.id, functionApp.id, 'table-contributor')
+  scope: functionStorage
+  properties: {
+    roleDefinitionId: storageTableDataContributorRoleId
     principalId: functionApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
@@ -525,7 +728,7 @@ resource apiCosmosRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments
   properties: {
     roleDefinitionId: cosmosDataContributorRoleId
     principalId: apiApp.identity.principalId
-    scope: cosmos.id
+    scope: '/dbs/${cosmosDb.name}/colls/${cosmosContainer.name}'
   }
 }
 
