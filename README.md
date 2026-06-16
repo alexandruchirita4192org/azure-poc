@@ -82,7 +82,7 @@ flowchart LR
 
 - Azure subscription with permission to create resource groups and role assignments.
 - Azure CLI.
-- .NET 8 SDK.
+- .NET 10 SDK.
 - GitHub repository with OpenID Connect configured for Azure deployment.
 - Container registry or Container Apps-compatible build flow.
 

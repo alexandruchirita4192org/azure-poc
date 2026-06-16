@@ -16,9 +16,9 @@
 
 ## Repository Map
 
-- `src/OrderApi/`: ASP.NET Core minimal API on .NET 8. `POST /orders` validates `X-Order-Api-Key`, writes SQL/Cosmos/Blob, sends Service Bus, publishes Event Grid, and emits Azure Monitor telemetry.
-- `src/OrderFunctions/`: .NET 8 isolated Azure Functions app. `OrderEventFunction` handles Event Grid `OrderCreated` events and logs event metadata.
-- `src/OrderWorker/`: .NET 8 worker service for Container Apps. Consumes Service Bus messages and logs processing metadata. The worker image is built from `src/OrderWorker/Dockerfile`.
+- `src/OrderApi/`: ASP.NET Core minimal API on .NET 10. `POST /orders` validates `X-Order-Api-Key`, writes SQL/Cosmos/Blob, sends Service Bus, publishes Event Grid, and emits Azure Monitor telemetry.
+- `src/OrderFunctions/`: .NET 10 isolated Azure Functions app. `OrderEventFunction` handles Event Grid `OrderCreated` events and logs event metadata.
+- `src/OrderWorker/`: .NET 10 worker service for Container Apps. Consumes Service Bus messages and logs processing metadata. The worker image is built from `src/OrderWorker/Dockerfile`.
 - `infra/`: Bicep deployment. `main.bicep` provisions Azure resources, managed identities, RBAC assignments, app settings, APIM policy, and deployment outputs. `main.parameters.json` contains non-secret defaults.
 - `scripts/`: Operational scripts. `deploy.sh` runs Azure CLI deployment; `validate-security.ps1` checks security invariants; `sql-managed-identity-bootstrap.sql` bootstraps SQL data-plane schema and permissions.
 - `.github/workflows/azure-poc.yml`: Manual production deployment workflow using Azure OIDC, locked .NET restore, vulnerability checks, Bicep validation/deployment, app publishing, worker image build/scan/sign/verify, and Container Apps digest deployment.
@@ -26,7 +26,7 @@
 
 ## Build And Validation
 
-- Use .NET 8. The GitHub workflow currently pins `DOTNET_VERSION` to `8.0.422`.
+- Use .NET 10. The GitHub workflow currently pins `DOTNET_VERSION` to `10.0.x`.
 - Restore with locked packages:
   - `dotnet restore src/OrderApi/OrderApi.csproj --locked-mode`
   - `dotnet restore src/OrderFunctions/OrderFunctions.csproj --locked-mode`

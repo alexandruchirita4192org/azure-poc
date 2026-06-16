@@ -1,7 +1,7 @@
-FROM mcr.microsoft.com/dotnet/runtime:8.0-noble-chiseled@sha256:fa419db60f904e0aa57b455e04a2f6193da69553c38aee35c1f70de48115011b AS base
+FROM mcr.microsoft.com/dotnet/runtime:10.0-noble-chiseled@sha256:03c2c32d689e9379d0902ba52434c1e76ce2950f2cf04f19cacb0147842e70d1 AS base
 WORKDIR /app
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0@sha256:7b3124c093e8d7ef44ca965082dfbac6d03d3bde9df8d5be5fb002f06109276a AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0@sha256:46a703da08438d0b2cf11a1898ed81b9fc28c83787b25e5220dc47c43bb90aa3 AS build
 WORKDIR /src
 COPY Directory.Build.props .
 COPY src/OrderWorker/OrderWorker.csproj src/OrderWorker/

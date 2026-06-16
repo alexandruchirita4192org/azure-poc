@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  DOTNET_VERSION: 8.0.422
+  DOTNET_VERSION: 10.0.x
   DEPLOYMENT_NAME: azure-poc
 
 jobs:

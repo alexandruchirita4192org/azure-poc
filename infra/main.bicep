@@ -360,7 +360,7 @@ resource apiApp 'Microsoft.Web/sites@2023-12-01' = {
     serverFarmId: plan.id
     virtualNetworkSubnetId: appIntegrationSubnet.id
     siteConfig: {
-      linuxFxVersion: 'DOTNETCORE|8.0'
+      linuxFxVersion: 'DOTNETCORE|10.0'
       appSettings: [
         {
           name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -444,7 +444,7 @@ resource worker 'Microsoft.App/containerApps@2024-03-01' = {
       containers: [
         {
           name: 'order-worker'
-          image: 'mcr.microsoft.com/dotnet/runtime:8.0'
+          image: 'mcr.microsoft.com/dotnet/runtime:10.0'
           env: [
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
