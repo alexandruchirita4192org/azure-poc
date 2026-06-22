@@ -544,7 +544,7 @@ resource orderApiBackendKeyNamedValue 'Microsoft.ApiManagement/service/namedValu
   parent: apim
   properties: {
     displayName: 'order-api-backend-key'
-    secret: true
+    secret: false
     value: orderApiBackendKey
   }
 }
@@ -728,7 +728,7 @@ resource apiCosmosRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments
   properties: {
     roleDefinitionId: cosmosDataContributorRoleId
     principalId: apiApp.identity.principalId
-    scope: '/dbs/${cosmosDb.name}/colls/${cosmosContainer.name}'
+    scope: cosmos.id
   }
 }
 

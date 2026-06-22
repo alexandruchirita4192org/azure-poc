@@ -2,7 +2,7 @@ bin/
 obj/
 publish/
 .vs/
-.vscode/
+
 *.user
 *.zip
 local.settings.json

@@ -8,7 +8,7 @@ COPY src/OrderWorker/OrderWorker.csproj src/OrderWorker/
 COPY src/OrderWorker/packages.lock.json src/OrderWorker/
 RUN dotnet restore src/OrderWorker/OrderWorker.csproj --locked-mode
 COPY src/OrderWorker/ src/OrderWorker/
-RUN dotnet publish src/OrderWorker/OrderWorker.csproj --no-restore -c Release -o /app/publish /p:UseAppHost=false
+RUN dotnet publish src/OrderWorker/OrderWorker.csproj -c Release -o /app/publish /p:UseAppHost=false
 
 FROM base AS final
 WORKDIR /app
