@@ -4,9 +4,9 @@
     "net10.0": {
       "Azure.Messaging.EventGrid": {
         "type": "Direct",
-        "requested": "[4.27.0, )",
-        "resolved": "4.27.0",
-        "contentHash": "u1PQSZA1rMjHAovzNLnwD08jswd2omYZCNeo6mO5TS4YRcFA77WfKa8QveCWHl2vuPVMDXK1LSxEykQ/xH0Fsg==",
+        "requested": "[4.29.0, )",
+        "resolved": "4.29.0",
+        "contentHash": "BN23y5Z17i+xATzxw3YrabY1mY5Uuv7Ra5j36KOADIcYZ5ZC5ldMc9J3Siw4t9hQWWn5cvH1wHq8wV18waAb1Q==",
         "dependencies": {
           "Azure.Core": "1.44.1",
           "System.Memory.Data": "6.0.0"
