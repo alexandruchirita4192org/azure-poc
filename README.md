@@ -108,6 +108,8 @@ The repo is optimized for deployment through Azure and GitHub Actions, but the p
    ./scripts/deploy.sh
    ```
 
+   The deploy script auto-detects the signed-in Azure account as the SQL Microsoft Entra administrator when possible. Override that behavior with `SQL_ENTRA_ADMIN_LOGIN` and `SQL_ENTRA_ADMIN_OBJECT_ID` if you need a different admin principal.
+
 4. Bootstrap Azure SQL managed identity access after deployment by running [`scripts/sql-managed-identity-bootstrap.sql`](./scripts/sql-managed-identity-bootstrap.sql) as the Azure SQL Microsoft Entra administrator.
 
 5. Submit a test request through API Management after deployment:
@@ -136,6 +138,7 @@ The repo is optimized for deployment through Azure and GitHub Actions, but the p
 Deployment is intentionally split into infrastructure, application publish, SQL bootstrap, and worker-image release:
 
 1. `scripts/deploy.sh` creates the resource group and deploys `infra/main.bicep` with the non-secret defaults from `infra/main.parameters.json`.
+   The script also passes the signed-in Azure account as the SQL Microsoft Entra administrator when it can discover one, so the SQL server is ready for the data-plane bootstrap step.
 2. The GitHub Actions workflow in [`.github/workflows/azure-poc.yml`](./.github/workflows/azure-poc.yml) validates security rules, restores in locked mode, builds the apps, validates and deploys Bicep, publishes the API and Functions apps, and wires the Event Grid subscription to `OrderEventFunction`.
 3. The workflow builds the worker image from `src/OrderWorker/Dockerfile`, emits SBOM and provenance metadata, scans the pushed image with Trivy, deletes the pushed digest if the scan fails, signs the image with Cosign, verifies the signature, and updates Azure Container Apps by immutable digest.
 4. Azure SQL schema and permissions are bootstrapped separately with [`scripts/sql-managed-identity-bootstrap.sql`](./scripts/sql-managed-identity-bootstrap.sql), because database users and roles are data-plane objects rather than ARM resources.
