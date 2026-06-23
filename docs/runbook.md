@@ -7,6 +7,9 @@ az login
 az account set --subscription "<subscription-id>"
 export SQL_ADMINISTRATOR_PASSWORD="<strong-password>"
 export ORDER_API_BACKEND_KEY="<random-backend-key>"
+# Optional: override the signed-in account used as the SQL Entra administrator.
+# export SQL_ENTRA_ADMIN_LOGIN="<user-principal-name>"
+# export SQL_ENTRA_ADMIN_OBJECT_ID="<object-id>"
 ./scripts/deploy.sh
 ```
 
@@ -29,13 +32,15 @@ curl -X POST "https://<apim-name>.azure-api.net/orders" \
 
 ## Bootstrap SQL Managed Identity
 
-Before the API can write order rows, connect to Azure SQL as an administrator and run `scripts/sql-managed-identity-bootstrap.sql`. The script creates the table if it is missing, creates the App Service managed identity user, and grants only `INSERT` through the `app_order_writer` role.
+Before the API can write order rows, connect to Azure SQL as an administrator and run `scripts/sql-managed-identity-bootstrap.sql`. The deploy script now attempts to configure the signed-in Azure account as the SQL Microsoft Entra administrator automatically, but you may still need to set `SQL_ENTRA_ADMIN_LOGIN` and `SQL_ENTRA_ADMIN_OBJECT_ID` explicitly if the signed-in identity cannot be resolved.
+
+The bootstrap script creates the table if it is missing, creates the App Service managed identity user, and grants only `INSERT` through the `app_order_writer` role.
 
 ```sql
 -- See scripts/sql-managed-identity-bootstrap.sql
 ```
 
-If `CREATE USER ... FROM EXTERNAL PROVIDER` fails, confirm the SQL server has a Microsoft Entra administrator configured. The Bicep template supports this through `sqlEntraAdministratorLogin` and `sqlEntraAdministratorObjectId`.
+If `CREATE USER ... FROM EXTERNAL PROVIDER` fails, confirm the SQL server has a Microsoft Entra administrator configured. The Bicep template supports this through `sqlEntraAdministratorLogin` and `sqlEntraAdministratorObjectId`, and `scripts/deploy.sh` now forwards those values automatically when possible.
 
 ## Investigate
 
